@@ -1,0 +1,16 @@
+{
+  "allowlist": [
+    {
+      "cmd": ["git", "status"],
+      "risk": "low"
+    },
+    {
+      "cmd": ["git", "diff"],
+      "risk": "low"
+    },
+    {
+      "cmd": ["git", "commit"],
+      "risk": "medium"
+    }
+  ]
+}
