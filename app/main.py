@@ -37,6 +37,16 @@ def write_task_result(outcome: str, hint: str) -> None:
         handle.write("\n")
 
 
+def write_task_abort(reason: str) -> None:
+    payload = {
+        "status": "aborted",
+        "reason": reason,
+    }
+    with open(RESULT_PATH, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
 def get_executable(command: str | Sequence[str]) -> str:
     if isinstance(command, str):
         parts = shlex.split(command)
@@ -138,36 +148,49 @@ def run_commands(commands: Iterable[str], cwd: str) -> None:
         subprocess.run(command, cwd=cwd, shell=True, check=False)
 
 
+def handle_user_interrupt() -> None:
+    write_event(
+        "aborted",
+        reason="user_interrupt",
+        signal="SIGINT",
+    )
+    write_task_abort("user_interrupt")
+
+
 def main() -> None:
     commands = sys.argv[1:]
     if not commands:
         print("No commands provided.")
         return
 
-    policy = load_policy()
+    try:
+        policy = load_policy()
 
-    print("Execution plan:")
-    for command in commands:
-        print(f"- {command}")
+        print("Execution plan:")
+        for command in commands:
+            print(f"- {command}")
 
-    risks: list[str] = []
-    for command in commands:
-        if not preflight(command, os.getcwd()):
+        risks: list[str] = []
+        for command in commands:
+            if not preflight(command, os.getcwd()):
+                return
+            risk = policy_check(command, policy)
+            if risk is None:
+                return
+            risks.append(str(risk))
+
+        if not confirm():
+            print("Execution cancelled.")
             return
-        risk = policy_check(command, policy)
-        if risk is None:
+
+        if "medium" in risks and not confirm_medium_risk():
+            print("Execution cancelled.")
             return
-        risks.append(str(risk))
 
-    if not confirm():
-        print("Execution cancelled.")
+        run_commands(commands, os.getcwd())
+    except KeyboardInterrupt:
+        handle_user_interrupt()
         return
-
-    if "medium" in risks and not confirm_medium_risk():
-        print("Execution cancelled.")
-        return
-
-    run_commands(commands, os.getcwd())
 
 
 if __name__ == "__main__":
