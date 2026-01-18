@@ -9,6 +9,12 @@ from typing import Iterable, Sequence
 
 EVENTS_PATH = os.environ.get("TASK_EVENTS_PATH", "task.events.jsonl")
 RESULT_PATH = os.environ.get("TASK_RESULT_PATH", "task.result.json")
+POLICY_PATH = os.environ.get(
+    "TASK_POLICY_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "policy", "policy.json"),
+)
+
+DANGEROUS_TOKENS = ("&&", "|", ";", ">", "<")
 
 
 def write_event(event: str, **fields: object) -> None:
@@ -37,6 +43,17 @@ def get_executable(command: str | Sequence[str]) -> str:
     else:
         parts = list(command)
     return parts[0] if parts else ""
+
+
+def normalize_command(command: str | Sequence[str]) -> list[str]:
+    if isinstance(command, str):
+        return shlex.split(command)
+    return list(command)
+
+
+def load_policy() -> dict[str, object]:
+    with open(POLICY_PATH, "r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def is_git_repo(cwd: str) -> bool:
@@ -77,8 +94,42 @@ def preflight(command: str, cwd: str) -> bool:
     return True
 
 
+def policy_check(command: str, policy: dict[str, object]) -> str | None:
+    if any(token in command for token in DANGEROUS_TOKENS):
+        write_event(
+            "policy_denied",
+            reason="dangerous_tokens",
+            command=command,
+        )
+        write_task_result(
+            "failed",
+            "remova caracteres perigosos (&& | ; > <)",
+        )
+        return None
+
+    normalized = normalize_command(command)
+    allowlist = policy.get("allowlist", [])
+    for entry in allowlist:
+        if entry.get("cmd") == normalized:
+            return entry.get("risk", "low")
+
+    write_event(
+        "policy_denied",
+        reason="not_allowed",
+        command=command,
+        normalized=normalized,
+    )
+    write_task_result("failed", "comando não permitido pela policy")
+    return None
+
+
 def confirm() -> bool:
     response = input("Confirm execution? [y/N]: ").strip().lower()
+    return response in {"y", "yes"}
+
+
+def confirm_medium_risk() -> bool:
+    response = input("Medium risk command. Continue? [y/N]: ").strip().lower()
     return response in {"y", "yes"}
 
 
@@ -93,15 +144,26 @@ def main() -> None:
         print("No commands provided.")
         return
 
+    policy = load_policy()
+
     print("Execution plan:")
     for command in commands:
         print(f"- {command}")
 
+    risks: list[str] = []
     for command in commands:
         if not preflight(command, os.getcwd()):
             return
+        risk = policy_check(command, policy)
+        if risk is None:
+            return
+        risks.append(str(risk))
 
     if not confirm():
+        print("Execution cancelled.")
+        return
+
+    if "medium" in risks and not confirm_medium_risk():
         print("Execution cancelled.")
         return
 
